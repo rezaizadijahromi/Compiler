@@ -29,31 +29,6 @@ typedef struct
     int length;
 } Token;
 
-typedef enum
-{
-    EXPR_NUMBER,
-    EXPR_BINARY
-} ExprType;
-
-typedef struct Expr
-{
-    ExprType type;
-    union
-    {
-        struct
-        {
-            double value;
-        } number;
-
-        struct
-        {
-            struct Expr *left;
-            TokenType op;
-            struct Expr *right;
-        } binary;
-    } as;
-} Expr;
-
 typedef struct
 {
     const char *start;
@@ -78,6 +53,7 @@ static char advance(void)
 {
     return *lexer.current++;
 }
+
 static int is_at_end(void)
 {
     return *lexer.current == '\0';
@@ -127,7 +103,7 @@ static Token number(void)
     return make_token(TOKEN_NUMBER);
 }
 
-static is_alpha_or_underscore(char c)
+static int is_alpha_or_underscore(char c)
 {
     return isalpha((unsigned char)c) || c == '_';
 }
@@ -229,6 +205,60 @@ const char *token_type_name(TokenType type)
     }
 }
 
+typedef enum
+{
+    EXPR_NUMBER,
+    EXPR_BINARY
+} ExprType;
+
+typedef struct Expr
+{
+    ExprType type;
+    union
+    {
+        struct
+        {
+            double value;
+        } number;
+
+        struct
+        {
+            struct Expr *left;
+            TokenType op;
+            struct Expr *right;
+        } binary;
+    } as;
+} Expr;
+
+typedef struct
+{
+    Token current;
+} Parser;
+
+static Parser parser; // globar parser
+
+static void init_parser(void)
+{
+    parser.current = scan_token();
+}
+
+static void advance_parser(void)
+{
+    parser.current = scan_token();
+}
+
+// Helper for parser
+static int match(TokenType type)
+{
+    if (parser.current.type == type)
+    {
+        advance_parser();
+        return 1;
+    }
+
+    return 0;
+}
+
 // Parser
 static Expr *new_number_expr(double value)
 {
@@ -245,11 +275,138 @@ static Expr *new_number_expr(double value)
     return expr;
 }
 
+static Expr *new_binary_expr(Expr *left, TokenType op, Expr *right)
+{
+    Expr *expr = (Expr *)malloc(sizeof(Expr));
+    if (!expr)
+    {
+        fprintf(stderr, "Out of memory in new_binary_expr");
+        exit(1);
+    }
+
+    expr->type = EXPR_BINARY;
+    expr->as.binary.left = left;
+    expr->as.binary.op = op;
+    expr->as.binary.right = right;
+
+    return expr;
+}
+
+static void expect(TokenType type, const char *message)
+{
+    if (parser.current.type == type)
+    {
+        advance_parser();
+        return;
+    }
+
+    fprintf(stderr, "Parser error: %s\n", message);
+    exit(1);
+}
+
+static Expr *parse_expression(void);
+
+static Expr *parser_factor(void)
+{
+    if (parser.current.type == TOKEN_NUMBER)
+    {
+        char temp[64];
+        int len = parser.current.length;
+        if (len >= (int)sizeof(temp))
+        {
+            len = (int)sizeof(temp) - 1;
+        }
+
+        memcpy(temp, parser.current.start, len);
+        temp[len] = '\0';
+
+        double value = strtod(temp, NULL);
+        advance_parser();
+
+        return new_number_expr(value);
+    }
+
+    if (match(TOKEN_LPAREN))
+    {
+        Expr *inside = parse_expression();
+        expect(TOKEN_RPAREN, "Expected ')' after expression");
+        return inside;
+    }
+
+    fprintf(stderr, "Parser error: expected number or '(' \n");
+    exit(1);
+}
+
+static Expr *parser_term(void)
+{
+    Expr *expr = parser_factor();
+
+    // for * or /
+    while (parser.current.type == TOKEN_STAR || parser.current.type == TOKEN_SLASH)
+    {
+        TokenType op = parser.current.type;
+        advance_parser();
+        Expr *right = parser_factor();
+        expr = new_binary_expr(expr, op, right);
+    }
+
+    return expr;
+}
+
+static Expr *parse_expression(void)
+{
+    Expr *expr = parser_term();
+
+    // + -
+    while (parser.current.type == TOKEN_PLUS || parser.current.type == TOKEN_MINUS)
+    {
+        TokenType op = parser.current.type;
+        advance_parser();
+        Expr *right = parser_term();
+        expr = new_binary_expr(expr, op, right);
+    }
+
+    return expr;
+}
+
+// Evaluation of expression tree
+static double eval_expr(Expr *expr)
+{
+    switch (expr->type)
+    {
+    case EXPR_NUMBER:
+        return expr->as.number.value;
+
+    case EXPR_BINARY:
+    {
+        double left = eval_expr(expr->as.binary.left);
+        double right = eval_expr(expr->as.binary.right);
+        switch (expr->as.binary.op)
+        {
+        case TOKEN_PLUS:
+            return left + right;
+        case TOKEN_MINUS:
+            return left - right;
+        case TOKEN_STAR:
+            return left * right;
+        case TOKEN_SLASH:
+            return left / right;
+        default:
+            fprintf(stderr, "Runtime error: unknown binary operator\n");
+            exit(1);
+        }
+    }
+    }
+
+    fprintf(stderr, "Runtime error: unknown expression type.\n");
+    exit(1);
+}
+
 int main(void)
 {
     char buffer[4096];
 
-    printf("Enter a line of code (e.g., 'x = 1 + 2 * 3; print x;'):\n");
+    printf("Enter an arithmetic expression (e.g., 1 + 2 * (3 + 4)):\n");
 
     if (!fgets(buffer, sizeof(buffer), stdin))
     {
@@ -258,23 +415,20 @@ int main(void)
     }
 
     init_lexer(buffer);
+    init_parser();
 
-    for (;;)
+    Expr *expr = parse_expression();
+
+    // Optionally: we could check for EOF here
+    if (parser.current.type != TOKEN_EOF &&
+        parser.current.type != TOKEN_SEMICOLON)
     {
-        Token token = scan_token();
-
-        printf("%s: '", token_type_name(token.type));
-        for (int i = 0; i < token.length; i++)
-        {
-            putchar(token.start[i]);
-        }
-        printf("'\n");
-
-        if (token.type == TOKEN_EOF)
-        {
-            break;
-        }
+        fprintf(stderr, "Unexpected extra input after expression.\n");
+        return 1;
     }
+
+    double result = eval_expr(expr);
+    printf("Result = %g\n", result);
 
     return 0;
 }
