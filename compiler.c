@@ -230,6 +230,85 @@ typedef struct Expr
     } as;
 } Expr;
 
+#define MAX_VARS 64
+
+typedef struct
+{
+    char name[64];
+    double value;
+    int is_set;
+} Var;
+
+static Var vars[MAX_VARS];
+
+static Var *get_var_slot(const char *name, int length)
+{
+    for (int i = 0; i < MAX_VARS; i++)
+    {
+        if (vars[i].is_set)
+        {
+            if ((int)strlen(vars[i].name) == length && strncmp(vars[i].name, name, length) == 0)
+            {
+                return &vars[i];
+            }
+        }
+    }
+
+    for (int i = 1; i < MAX_VARS; i++)
+    {
+        if (!vars[i].is_set)
+        {
+            int copy_len = length;
+            if (copy_len >= (int)sizeof(vars[i].name))
+            {
+                copy_len = (int)sizeof(vars[i].name) - 1;
+            }
+
+            memcpy(vars[i].name, name, copy_len);
+            vars[i].name[copy_len] = '\0';
+            vars[i].is_set = 1;
+            vars[i].value = 0.0;
+            return &vars[i];
+        }
+    }
+
+    fprintf(stderr, "Too many variables (limit %d)\n", MAX_VARS);
+    exit(1);
+}
+
+typedef enum
+{
+    STMT_EXPR,
+    STMT_PRINT,
+    STMT_ASSIGN
+} StmtType;
+
+typedef struct Stms
+{
+    StmtType type;
+    union
+    {
+        struct
+        {
+            Expr *expr;
+        } expr_stmt;
+
+        struct
+        {
+            Expr *expr;
+        } print_stmt;
+
+        struct
+        {
+            char name[64];
+            Expr *expr;
+        } assign_stmt;
+    } as;
+
+    struct Stmt *next;
+
+} Stmt;
+
 typedef struct
 {
     Token current;
@@ -367,6 +446,24 @@ static Expr *parse_expression(void)
     }
 
     return expr;
+}
+
+static Stmt *parser_statement(void);
+static Stmt *parser_program(void);
+
+static Stmt *new_stmt(StmtType type)
+{
+    Stmt *stmt = (Stmt *)malloc(sizeof(Stmt));
+
+    if (!stmt)
+    {
+        fprintf(stderr, "Out of memory in new_stmt'n");
+        exit(1);
+    }
+
+    stmt->type = type;
+    stmt->next = NULL;
+    return stmt;
 }
 
 // Evaluation of expression tree
