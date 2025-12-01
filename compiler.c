@@ -208,7 +208,8 @@ const char *token_type_name(TokenType type)
 typedef enum
 {
     EXPR_NUMBER,
-    EXPR_BINARY
+    EXPR_BINARY,
+    EXPR_VARIABLE
 } ExprType;
 
 typedef struct Expr
@@ -227,6 +228,11 @@ typedef struct Expr
             TokenType op;
             struct Expr *right;
         } binary;
+
+        struct
+        {
+            char name[64];
+        } variable;
     } as;
 } Expr;
 
@@ -241,7 +247,7 @@ typedef struct
 
 static Var vars[MAX_VARS];
 
-static Var *get_var_slot(const char *name, int length)
+static Var *find_var_slot(const char *name, int length)
 {
     for (int i = 0; i < MAX_VARS; i++)
     {
@@ -253,8 +259,16 @@ static Var *get_var_slot(const char *name, int length)
             }
         }
     }
+    return NULL;
+}
 
-    for (int i = 1; i < MAX_VARS; i++)
+static Var *get_var_slot(const char *name, int length)
+{
+    Var *v = find_var_slot(name, length);
+    if (v)
+        return v;
+
+    for (int i = 0; i < MAX_VARS; i++)
     {
         if (!vars[i].is_set)
         {
@@ -283,7 +297,7 @@ typedef enum
     STMT_ASSIGN
 } StmtType;
 
-typedef struct Stms
+typedef struct Stmt
 {
     StmtType type;
     union
@@ -371,6 +385,28 @@ static Expr *new_binary_expr(Expr *left, TokenType op, Expr *right)
     return expr;
 }
 
+static Expr *new_variable_expr(const char *name, int length)
+{
+    Expr *expr = (Expr *)malloc(sizeof(Expr));
+    if (!expr)
+    {
+        fprintf(stderr, "Out of memory in new_variable_expr\n");
+        exit(1);
+    }
+
+    expr->type = EXPR_VARIABLE;
+
+    int copy_len = length;
+    if (copy_len >= (int)sizeof(expr->as.variable.name))
+    {
+        copy_len = (int)sizeof(expr->as.variable.name) - 1;
+    }
+    memcpy(expr->as.variable.name, name, copy_len);
+    expr->as.variable.name[copy_len] = '\0';
+
+    return expr;
+}
+
 static void expect(TokenType type, const char *message)
 {
     if (parser.current.type == type)
@@ -405,6 +441,13 @@ static Expr *parser_factor(void)
         return new_number_expr(value);
     }
 
+    if (parser.current.type == TOKEN_IDENTIFIER)
+    {
+        Token name_token = parser.current;
+        advance_parser();
+        return new_variable_expr(name_token.start, name_token.length);
+    }
+
     if (match(TOKEN_LPAREN))
     {
         Expr *inside = parse_expression();
@@ -412,7 +455,7 @@ static Expr *parser_factor(void)
         return inside;
     }
 
-    fprintf(stderr, "Parser error: expected number or '(' \n");
+    fprintf(stderr, "Parser error: expected number, identifier, or '(' \n");
     exit(1);
 }
 
@@ -548,6 +591,19 @@ static double eval_expr(Expr *expr)
     case EXPR_NUMBER:
         return expr->as.number.value;
 
+    case EXPR_VARIABLE:
+    {
+        int len = (int)strlen(expr->as.variable.name);
+        Var *slot = find_var_slot(expr->as.variable.name, len);
+        if (!slot)
+        {
+            fprintf(stderr, "Runtime error: use of undefined variable '%s'\n",
+                    expr->as.variable.name);
+            exit(1);
+        }
+        return slot->value;
+    }
+
     case EXPR_BINARY:
     {
         double left = eval_expr(expr->as.binary.left);
@@ -573,11 +629,47 @@ static double eval_expr(Expr *expr)
     exit(1);
 }
 
+static void exect_stmt(Stmt *stmt)
+{
+    switch (stmt->type)
+    {
+    case STMT_PRINT:
+    {
+        double value = eval_expr(stmt->as.print_stmt.expr);
+        printf("%g\n", value);
+        break;
+    }
+    case STMT_ASSIGN:
+    {
+        double value = eval_expr(stmt->as.assign_stmt.expr);
+        Var *slot = get_var_slot(stmt->as.assign_stmt.name, (int)strlen(stmt->as.assign_stmt.name));
+        slot->value = value;
+        break;
+    }
+
+    case STMT_EXPR:
+    {
+        (void)eval_expr(stmt->as.expr_stmt.expr);
+        break;
+    }
+    }
+}
+
+static void exec_program(Stmt *program)
+{
+    Stmt *current = program;
+    while (current != NULL)
+    {
+        exect_stmt(current);
+        current = current->next;
+    }
+}
+
 int main(void)
 {
     char buffer[4096];
 
-    printf("Enter an arithmetic expression (e.g., 1 + 2 * (3 + 4)):\n");
+    printf("Enter a program (e.g., 'x = 1 + 2 * 3; print x;'):\n");
 
     if (!fgets(buffer, sizeof(buffer), stdin))
     {
@@ -588,18 +680,9 @@ int main(void)
     init_lexer(buffer);
     init_parser();
 
-    Expr *expr = parse_expression();
+    Stmt *program = parser_program();
 
-    // Optionally: we could check for EOF here
-    if (parser.current.type != TOKEN_EOF &&
-        parser.current.type != TOKEN_SEMICOLON)
-    {
-        fprintf(stderr, "Unexpected extra input after expression.\n");
-        return 1;
-    }
-
-    double result = eval_expr(expr);
-    printf("Result = %g\n", result);
+    exec_program(program);
 
     return 0;
 }
