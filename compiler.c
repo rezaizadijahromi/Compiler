@@ -466,6 +466,80 @@ static Stmt *new_stmt(StmtType type)
     return stmt;
 }
 
+static Stmt *parser_statement(void)
+{
+    if (parser.current.type == TOKEN_PRINT)
+    {
+        advance_parser();
+        Expr *expr = parse_expression();
+        expect(TOKEN_SEMICOLON, "Expected ';' after print expression");
+
+        Stmt *stmt = new_stmt(STMT_PRINT);
+        stmt->as.print_stmt.expr = expr;
+        return stmt;
+    }
+
+    if (parser.current.type == TOKEN_IDENTIFIER)
+    {
+        Token name_token = parser.current;
+        advance_parser();
+
+        if (match(TOKEN_EQUAL))
+        {
+            Expr *expr = parse_expression();
+            expect(TOKEN_SEMICOLON, "Expected ';' after assignment");
+
+            Stmt *stmt = new_stmt(STMT_ASSIGN);
+
+            int len = name_token.length;
+            if (len >= (int)sizeof(stmt->as.assign_stmt.name))
+            {
+                len = (int)sizeof(stmt->as.assign_stmt.name) - 1;
+            }
+            memcpy(stmt->as.assign_stmt.name, name_token.start, len);
+            stmt->as.assign_stmt.name[len] = '\0';
+
+            stmt->as.assign_stmt.expr = expr;
+
+            return stmt;
+        }
+        else
+        {
+            fprintf(stderr, "Parser error: expected '=' after identifier for assignt \n");
+            exit(1);
+        }
+    }
+
+    Expr *expr = parse_expression();
+    expect(TOKEN_SEMICOLON, "Expected ';' after exoression");
+
+    Stmt *stmt = new_stmt(STMT_EXPR);
+    stmt->as.expr_stmt.expr = expr;
+    return stmt;
+}
+
+static Stmt *parser_program(void)
+{
+    Stmt *head = NULL;
+    Stmt *tail = NULL;
+
+    while (parser.current.type != TOKEN_EOF)
+    {
+        Stmt *stmt = parser_statement();
+        if (head == NULL)
+        {
+            head = tail = stmt;
+        }
+        else
+        {
+            tail->next = stmt;
+            tail = stmt;
+        }
+    }
+
+    return head;
+}
+
 // Evaluation of expression tree
 static double eval_expr(Expr *expr)
 {
